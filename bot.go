@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/technoweenie/multipartstreamer"
@@ -91,6 +92,9 @@ func (bot *BotAPI) MakeRequest(endpoint string, params url.Values) (APIResponse,
 		parameters := ResponseParameters{}
 		if apiResp.Parameters != nil {
 			parameters = *apiResp.Parameters
+		}
+		if apiResp.ErrorCode == 409 {
+			return apiResp, nil
 		}
 		return apiResp, Error{Code: apiResp.ErrorCode, Message: apiResp.Description, ResponseParameters: parameters}
 	}
@@ -487,11 +491,22 @@ func (bot *BotAPI) GetWebhookInfo() (WebhookInfo, error) {
 	return info, err
 }
 
+type record struct {
+	recordMap         map[int]bool
+	recordMapRWLocker *sync.RWMutex
+}
+
 // GetUpdatesChan starts and returns a channel for getting updates.
 func (bot *BotAPI) GetUpdatesChan(config UpdateConfig) (UpdatesChannel, error) {
 	ch := make(chan Update, bot.Buffer)
 
 	go func() {
+
+		record := &record{
+			recordMap:         make(map[int]bool),
+			recordMapRWLocker: new(sync.RWMutex),
+		}
+
 		for {
 			select {
 			case <-bot.shutdownChannel:
@@ -502,18 +517,40 @@ func (bot *BotAPI) GetUpdatesChan(config UpdateConfig) (UpdatesChannel, error) {
 			updates, err := bot.GetUpdates(config)
 			if err != nil {
 				log.Println(err)
-				log.Println("Failed to get updates, retrying in 3 seconds...")
-				time.Sleep(time.Second * 3)
-
+				log.Println("Failed to get updates, retrying in 2 seconds...")
+				time.Sleep(time.Second * 2)
 				continue
 			}
 
 			for _, update := range updates {
 				if update.UpdateID >= config.Offset {
-					config.Offset = update.UpdateID + 1
+					_, ok := record.recordMap[update.UpdateID]
+					if ok {
+						continue
+					}
+
+					record.recordMapRWLocker.Lock()
+					record.recordMap[update.UpdateID] = true
+					record.recordMapRWLocker.Unlock()
+
 					ch <- update
+					go func() {
+						// 延後十秒在刪除訊息
+						time.Sleep(time.Second * 10)
+
+						// 把訊息從MAP移除
+						record.recordMapRWLocker.Lock()
+						delete(record.recordMap, update.UpdateID)
+						record.recordMapRWLocker.Unlock()
+
+						// 移除訊息
+						config.Offset = update.UpdateID + 1
+						bot.GetUpdates(config)
+					}()
 				}
 			}
+			// 已取得的話就先睡3秒再取下一次
+			time.Sleep(time.Second * 3)
 		}
 	}()
 

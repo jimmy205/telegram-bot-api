@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -279,6 +280,12 @@ func (bot *BotAPI) IsMessageToMe(message Message) bool {
 //
 // It requires the Chattable to send.
 func (bot *BotAPI) Send(c Chattable) (Message, error) {
+	defer func() {
+		if err := recover(); err != nil {
+			log.Println("🐣🐣🐣🐣🐣🐣🐣🐣 Telegram Send Method Panic :", string(debug.Stack()))
+		}
+	}()
+
 	switch c.(type) {
 	case Fileable:
 		return bot.sendFile(c.(Fileable))
